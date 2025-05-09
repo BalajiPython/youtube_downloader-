@@ -108,7 +108,7 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                         'preferredquality': '320',
                     }],
                     'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                    'verbose': True,  # Add verbose output
+                    'verbose': True,
                 }
                 file_extension = 'mp3'
                 media_type = 'audio/mpeg'
@@ -116,12 +116,15 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                 # Video download options with basic format selection
                 ydl_opts = {
                     **common_opts,
-                    'format': '18/best',  # Format 18 is 360p MP4, falling back to best available
+                    'format': 'best[ext=mp4]/best',  # Try MP4 first, then any format
                     'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                    'verbose': True,  # Add verbose output
+                    'verbose': True,
                     'extract_flat': False,
                     'force_generic_extractor': False,
                     'no_check_certificate': True,
+                    'proxy': 'socks5://127.0.0.1:9050',  # Try using Tor proxy
+                    'socket_timeout': 120,  # Increased timeout
+                    'retries': 20,  # Increased retries
                 }
                 file_extension = 'mp4'
                 media_type = 'video/mp4'
@@ -135,8 +138,19 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                 # First attempt with standard options
                 logger.info("Attempting first download method...")
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    logger.info(f"First attempt successful, info: {info.get('title') if info else 'No info'}")
+                    try:
+                        # Try to get video info first
+                        logger.info("Getting video info...")
+                        info = ydl.extract_info(url, download=False)
+                        if info:
+                            logger.info(f"Got video info: {info.get('title')}")
+                            # Now download the video
+                            logger.info("Starting download...")
+                            info = ydl.extract_info(url, download=True)
+                            logger.info(f"Download completed: {info.get('title') if info else 'No info'}")
+                    except Exception as e:
+                        logger.warning(f"Error in first attempt: {str(e)}")
+                        raise
             except Exception as e:
                 logger.warning(f"First attempt failed with error: {str(e)}")
                 try:
@@ -148,10 +162,24 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                         'quiet': False,
                         'no_warnings': False,
                         'verbose': True,
+                        'proxy': 'socks5://127.0.0.1:9050',
+                        'socket_timeout': 120,
+                        'retries': 20,
                     }
                     with yt_dlp.YoutubeDL(basic_opts) as ydl2:
-                        info = ydl2.extract_info(url, download=True)
-                        logger.info(f"Second attempt successful, info: {info.get('title') if info else 'No info'}")
+                        try:
+                            # Try to get video info first
+                            logger.info("Getting video info (second attempt)...")
+                            info = ydl2.extract_info(url, download=False)
+                            if info:
+                                logger.info(f"Got video info: {info.get('title')}")
+                                # Now download the video
+                                logger.info("Starting download (second attempt)...")
+                                info = ydl2.extract_info(url, download=True)
+                                logger.info(f"Download completed: {info.get('title') if info else 'No info'}")
+                        except Exception as e2:
+                            logger.warning(f"Error in second attempt: {str(e2)}")
+                            raise
                 except Exception as e2:
                     logger.error(f"Second attempt failed with error: {str(e2)}")
                     raise HTTPException(status_code=500, detail=f"Could not download video: {str(e2)}")
