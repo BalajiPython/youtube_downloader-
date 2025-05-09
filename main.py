@@ -124,19 +124,24 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
             logger.info(f"Starting download for URL: {url}")
             
             # Download the video/audio
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = None
+            try:
+                # First attempt with standard options
+                logger.info("Attempting to extract video information...")
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+            except Exception as e:
+                logger.warning(f"First attempt failed: {str(e)}")
                 try:
-                    # Try to get video info with different options if the first attempt fails
-                    try:
-                        logger.info("Attempting to extract video information...")
-                        info = ydl.extract_info(url, download=True)
-                    except Exception as e:
-                        logger.warning(f"First attempt failed: {str(e)}")
-                        # Try with different options
-                        ydl_opts['extract_flat'] = True
-                        ydl_opts['force_generic_extractor'] = True
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl2:
-                            info = ydl2.extract_info(url, download=True)
+                    # Second attempt with different options
+                    logger.info("Trying alternative extraction method...")
+                    ydl_opts['extract_flat'] = True
+                    ydl_opts['force_generic_extractor'] = True
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl2:
+                        info = ydl2.extract_info(url, download=True)
+                except Exception as e2:
+                    logger.error(f"Second attempt failed: {str(e2)}")
+                    raise HTTPException(status_code=500, detail=f"Could not download video: {str(e2)}")
 
             if not info:
                 raise HTTPException(status_code=404, detail="Could not extract video information")
