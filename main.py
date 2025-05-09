@@ -5,6 +5,12 @@ import yt_dlp
 import os
 import uuid
 import re
+import logging
+import tempfile
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -55,8 +61,9 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
 
         # Create a unique ID for this download
         download_id = str(uuid.uuid4())
-        temp_dir = f"temp_{download_id}"
+        temp_dir = os.path.join(tempfile.gettempdir(), f"temp_{download_id}")
         os.makedirs(temp_dir, exist_ok=True)
+        logger.info(f"Created temporary directory: {temp_dir}")
 
         try:
             # Common options for both video and audio
@@ -68,7 +75,7 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                 'no_color': True,
                 'geo_bypass': True,
                 'geo_verification_proxy': None,
-                'socket_timeout': 30,
+                'socket_timeout': 60,  # Increased timeout
                 'retries': 10,
                 'extractor_args': {
                     'youtube': {
@@ -113,15 +120,18 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                 file_extension = 'mp4'
                 media_type = 'video/mp4'
 
+            logger.info(f"Starting download for URL: {url}")
             # Download the video/audio
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 try:
                     # First try to get video info without downloading
+                    logger.info("Extracting video information...")
                     info = ydl.extract_info(url, download=False)
                     if not info:
                         raise HTTPException(status_code=404, detail="Could not extract video information")
                     
                     # Now download the video
+                    logger.info("Starting video download...")
                     info = ydl.extract_info(url, download=True)
                     if not info:
                         raise HTTPException(status_code=404, detail="Could not download video")
@@ -145,6 +155,7 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                     if not os.path.exists(temp_filename):
                         raise HTTPException(status_code=500, detail="Downloaded file not found")
 
+                    logger.info(f"Download completed successfully: {temp_filename}")
                     # Return the file
                     return FileResponse(
                         temp_filename,
@@ -153,16 +164,20 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                         background=lambda: cleanup_files(temp_dir)
                     )
                 except yt_dlp.utils.DownloadError as e:
+                    logger.error(f"Download error: {str(e)}")
                     raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
                 except Exception as e:
+                    logger.error(f"Error processing video: {str(e)}")
                     raise HTTPException(status_code=500, detail=f"Error processing video: {str(e)}")
 
         except Exception as e:
+            logger.error(f"Error in download process: {str(e)}")
             cleanup_files(temp_dir)
             raise e
 
     except Exception as e:
         error_message = str(e)
+        logger.error(f"Error: {error_message}")
         if "Video unavailable" in error_message:
             raise HTTPException(status_code=404, detail="Video is unavailable or private")
         elif "Sign in to confirm your age" in error_message:
@@ -178,5 +193,7 @@ def cleanup_files(directory):
             if os.path.isfile(file_path):
                 os.remove(file_path)
         os.rmdir(directory)
-    except Exception:
+        logger.info(f"Cleaned up directory: {directory}")
+    except Exception as e:
+        logger.error(f"Error cleaning up files: {str(e)}")
         pass  # Ignore cleanup errors 
