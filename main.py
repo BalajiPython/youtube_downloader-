@@ -1,17 +1,16 @@
-from fastapi import FastAPI, Query, HTTPException, Request
+import os
+import re
+import shutil
+import uuid
+import logging
+import tempfile
+import asyncio
+from pathlib import Path
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
-import os
-import uuid
-import re
-import logging
-import tempfile
-from typing import Optional
-import shutil
-from pathlib import Path
-import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -248,45 +247,39 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
             # Define cleanup function
             def cleanup_files():
                 try:
-                    # Clean up temp directory
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                    # Remove output file after it's been sent
+                    # Remove temporary directory and its contents
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+                    # Remove the copied file
                     if os.path.exists(temp_output_file):
                         os.remove(temp_output_file)
-                    logger.info(f"Cleaned up temporary files")
                 except Exception as e:
-                    logger.error(f"Error cleaning up files: {str(e)}")
-            
-            # Return the file
-            return FileResponse(
+                    logger.error(f"Error during cleanup: {str(e)}")
+
+            # Return the file response
+            response = FileResponse(
                 temp_output_file,
                 media_type=media_type,
                 filename=f"{title}.{file_extension}",
                 background=cleanup_files
             )
+            return response
 
         except Exception as e:
-            logger.error(f"Error in download process: {str(e)}")
-            # Clean up temp directory
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            raise e
+            # Clean up on error
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error during download: {str(e)}"
+            )
 
-    except HTTPException as e:
-        # Re-raise HTTP exceptions
-        raise e
     except Exception as e:
-        error_message = str(e)
-        logger.error(f"Error: {error_message}")
-        
-        # Provide more specific error messages based on the error
-        if "Video unavailable" in error_message:
-            raise HTTPException(status_code=404, detail="Video is unavailable or private")
-        elif "Sign in to confirm your age" in error_message:
-            raise HTTPException(status_code=403, detail="Age-restricted video")
-        elif "Unable to extract" in error_message or "Unable to download" in error_message:
-            raise HTTPException(status_code=503, detail="Unable to access this video. YouTube might be blocking downloads.")
-        else:
-            raise HTTPException(status_code=500, detail=f"Error downloading video: {error_message}")
+        logger.error(f"Unexpected error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred"
+        )
 
 # This helps with debugging
 @app.exception_handler(Exception)
@@ -297,7 +290,6 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"detail": f"Internal server error: {str(exc)}"}
     )
 
-# Health check endpoint
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
