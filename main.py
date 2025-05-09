@@ -1,7 +1,7 @@
-from fastapi import FastAPI, Query, HTTPException
-
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, Query, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 import os
 import uuid
@@ -9,6 +9,13 @@ import re
 import logging
 import tempfile
 from typing import Optional
+import shutil
+from pathlib import Path
+import asyncio
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,11 +23,32 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Mount the static directory for serving static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
-# To run this app, use:
-# uvicorn main:app --reload
+# Mount the static directory for serving static files
+static_dir = Path("static")
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+else:
+    logger.warning(f"Static directory not found at {static_dir.absolute()}")
+
+# Check if FFmpeg is installed
+try:
+    import subprocess
+    result = subprocess.run(['ffmpeg', '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        logger.warning("FFmpeg may not be installed or not in PATH. Audio conversion might fail.")
+    else:
+        logger.info("FFmpeg found and working.")
+except Exception as e:
+    logger.warning(f"Error checking FFmpeg: {str(e)}")
 
 def is_valid_youtube_url(url: str) -> bool:
     youtube_regex = r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})'
@@ -55,193 +83,206 @@ def get_home():
     </html>
     """
 
+@app.get("/status")
+def server_status():
+    """Endpoint to check if the server is up and running"""
+    return {"status": "ok", "message": "Server is running"}
+
 @app.get("/download")
-def download_video(url: str = Query(..., description="YouTube video URL"), format: str = Query("video", description="Download format: video or audio")):
+async def download_video(request: Request, url: str = Query(..., description="YouTube video URL"), format: str = Query("video", description="Download format: video or audio")):
     try:
         if not is_valid_youtube_url(url):
+            logger.warning(f"Invalid URL format: {url}")
             raise HTTPException(status_code=400, detail="Invalid YouTube URL format")
 
         # Create a unique ID for this download
         download_id = str(uuid.uuid4())
-        temp_dir = os.path.join(tempfile.gettempdir(), f"temp_{download_id}")
+        
+        # Create temp directory in the system's temp folder
+        temp_dir = os.path.join(tempfile.gettempdir(), f"yt_dl_{download_id}")
         os.makedirs(temp_dir, exist_ok=True)
         logger.info(f"Created temporary directory: {temp_dir}")
 
         try:
             # Common options for both video and audio
             common_opts = {
-                'quiet': True,
-                'no_warnings': True,
+                'quiet': False,  # Changed to False for debugging
+                'no_warnings': False,  # Changed to False for debugging
                 'nocheckcertificate': True,
-                'ignoreerrors': True,
+                'ignoreerrors': False,  # Changed to False for better error handling
                 'no_color': True,
-                'geo_bypass': True,
-                'geo_verification_proxy': None,
-                'socket_timeout': 60,
-                'retries': 10,
-                'extractor_args': {
-                    'youtube': {
-                        'skip': ['dash', 'hls'],
-                        'player_client': ['android', 'web'],
-                        'player_skip': ['js', 'configs', 'webpage'],
-                    }
-                },
+                'verbose': True,
+                'extract_flat': False,
+                'socket_timeout': 30,
+                'retries': 5,
+                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
+                    'Referer': 'https://www.youtube.com/'
                 }
             }
 
             if format == "audio":
-                # Audio download options with high quality
+                # Audio download options
                 ydl_opts = {
                     **common_opts,
                     'format': 'bestaudio/best',
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',
                         'preferredcodec': 'mp3',
-                        'preferredquality': '320',
+                        'preferredquality': '192',
                     }],
-                    'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                    'verbose': True,
                 }
                 file_extension = 'mp3'
                 media_type = 'audio/mpeg'
             else:
-                # Video download options with basic format selection
+                # Video download options with better format selection for compatibility
                 ydl_opts = {
                     **common_opts,
                     'format': 'best[ext=mp4]/best',  # Try MP4 first, then any format
-                    'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                    'verbose': True,
-                    'extract_flat': False,
-                    'force_generic_extractor': False,
-                    'no_check_certificate': True,
-                    'proxy': 'socks5://127.0.0.1:9050',  # Try using Tor proxy
-                    'socket_timeout': 120,  # Increased timeout
-                    'retries': 20,  # Increased retries
                 }
                 file_extension = 'mp4'
                 media_type = 'video/mp4'
 
             logger.info(f"Starting download for URL: {url} with format: {format}")
-            logger.info(f"Download options: {ydl_opts}")
             
-            # Download the video/audio
-            info = None
+            # Function to attempt download
+            async def try_download():
+                # Run download in a separate thread to not block
+                def download_task():
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        return ydl.extract_info(url, download=True)
+                
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(None, download_task)
+            
+            # Try downloading with primary options
             try:
-                # First attempt with standard options
-                logger.info("Attempting first download method...")
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    try:
-                        # Try to get video info first
-                        logger.info("Getting video info...")
-                        info = ydl.extract_info(url, download=False)
-                        if info:
-                            logger.info(f"Got video info: {info.get('title')}")
-                            # Now download the video
-                            logger.info("Starting download...")
-                            info = ydl.extract_info(url, download=True)
-                            logger.info(f"Download completed: {info.get('title') if info else 'No info'}")
-                    except Exception as e:
-                        logger.warning(f"Error in first attempt: {str(e)}")
-                        raise
+                logger.info("Attempting download...")
+                info = await try_download()
+                if not info:
+                    raise Exception("No information returned from download process")
+                logger.info(f"Download completed: {info.get('title')}")
             except Exception as e:
                 logger.warning(f"First attempt failed with error: {str(e)}")
-                try:
-                    # Second attempt with basic options
-                    logger.info("Trying second download method...")
-                    basic_opts = {
-                        'format': 'best',
-                        'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                        'quiet': False,
-                        'no_warnings': False,
-                        'verbose': True,
-                        'proxy': 'socks5://127.0.0.1:9050',
-                        'socket_timeout': 120,
-                        'retries': 20,
-                    }
-                    with yt_dlp.YoutubeDL(basic_opts) as ydl2:
-                        try:
-                            # Try to get video info first
-                            logger.info("Getting video info (second attempt)...")
-                            info = ydl2.extract_info(url, download=False)
-                            if info:
-                                logger.info(f"Got video info: {info.get('title')}")
-                                # Now download the video
-                                logger.info("Starting download (second attempt)...")
-                                info = ydl2.extract_info(url, download=True)
-                                logger.info(f"Download completed: {info.get('title') if info else 'No info'}")
-                        except Exception as e2:
-                            logger.warning(f"Error in second attempt: {str(e2)}")
-                            raise
-                except Exception as e2:
-                    logger.error(f"Second attempt failed with error: {str(e2)}")
-                    raise HTTPException(status_code=500, detail=f"Could not download video: {str(e2)}")
-
-            if not info:
-                raise HTTPException(status_code=404, detail="Could not extract video information")
+                # If first attempt failed, try with simpler options
+                logger.info("Trying with simpler options...")
+                
+                # Simplified options for retry
+                simple_opts = {
+                    'quiet': False,
+                    'verbose': True,
+                    'format': 'best',
+                    'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                    'nocheckcertificate': True,
+                    'socket_timeout': 60,
+                    'retries': 10,
+                }
+                
+                if format == "audio":
+                    simple_opts['postprocessors'] = [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }]
+                
+                # Try with simpler options
+                with yt_dlp.YoutubeDL(simple_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    if not info:
+                        raise HTTPException(status_code=500, detail="Could not extract video information")
             
             # Get the title and clean it
-            title = info.get('title', 'download')
+            title = info.get('title', 'download').strip()
             if not title:
                 title = 'download'
+            # Clean title for filename
             title = re.sub(r'[^\w\-_\. ]', '_', title)
             logger.info(f"Video title: {title}")
             
-            # Get the filename
-            temp_filename = yt_dlp.YoutubeDL(ydl_opts).prepare_filename(info)
-            if not temp_filename:
-                raise HTTPException(status_code=500, detail="Could not prepare filename")
-            logger.info(f"Temporary filename: {temp_filename}")
-            
-            # For audio downloads, the filename will have .mp3 extension
+            # Find the downloaded file
             if format == "audio":
-                temp_filename = temp_filename.rsplit('.', 1)[0] + '.mp3'
+                # For audio, find the MP3 file
+                file_pattern = "*.mp3"
+            else:
+                # For video, find the downloaded video file
+                file_pattern = "*"
+                
+            downloaded_files = list(Path(temp_dir).glob(file_pattern))
             
-            # Check if the file exists
-            if not os.path.exists(temp_filename):
-                logger.error(f"File not found at path: {temp_filename}")
+            if not downloaded_files:
+                logger.error(f"No files found in {temp_dir}")
+                raise HTTPException(status_code=500, detail="Downloaded file not found")
+                
+            downloaded_file = str(downloaded_files[0])
+            logger.info(f"Found downloaded file: {downloaded_file}")
+            
+            # Ensure the file exists
+            if not os.path.exists(downloaded_file):
+                logger.error(f"File not found at path: {downloaded_file}")
                 raise HTTPException(status_code=500, detail="Downloaded file not found")
 
-            logger.info(f"Download completed successfully: {temp_filename}")
+            logger.info(f"Download completed successfully: {downloaded_file}")
+            
+            # Create a copy to avoid deletion issues
+            temp_output_file = os.path.join(tempfile.gettempdir(), f"{title}.{file_extension}")
+            shutil.copy2(downloaded_file, temp_output_file)
+            
+            # Define cleanup function
+            def cleanup_files():
+                try:
+                    # Clean up temp directory
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    # Remove output file after it's been sent
+                    if os.path.exists(temp_output_file):
+                        os.remove(temp_output_file)
+                    logger.info(f"Cleaned up temporary files")
+                except Exception as e:
+                    logger.error(f"Error cleaning up files: {str(e)}")
+            
             # Return the file
             return FileResponse(
-                temp_filename,
+                temp_output_file,
                 media_type=media_type,
                 filename=f"{title}.{file_extension}",
-                background=lambda: cleanup_files(temp_dir)
+                background=cleanup_files
             )
 
         except Exception as e:
             logger.error(f"Error in download process: {str(e)}")
-            cleanup_files(temp_dir)
+            # Clean up temp directory
+            shutil.rmtree(temp_dir, ignore_errors=True)
             raise e
 
+    except HTTPException as e:
+        # Re-raise HTTP exceptions
+        raise e
     except Exception as e:
         error_message = str(e)
         logger.error(f"Error: {error_message}")
+        
+        # Provide more specific error messages based on the error
         if "Video unavailable" in error_message:
             raise HTTPException(status_code=404, detail="Video is unavailable or private")
         elif "Sign in to confirm your age" in error_message:
             raise HTTPException(status_code=403, detail="Age-restricted video")
+        elif "Unable to extract" in error_message or "Unable to download" in error_message:
+            raise HTTPException(status_code=503, detail="Unable to access this video. YouTube might be blocking downloads.")
         else:
             raise HTTPException(status_code=500, detail=f"Error downloading video: {error_message}")
 
-def cleanup_files(directory: str) -> None:
-    """Clean up temporary files and directory"""
-    try:
-        for file in os.listdir(directory):
-            file_path = os.path.join(directory, file)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-        os.rmdir(directory)
-        logger.info(f"Cleaned up directory: {directory}")
-    except Exception as e:
-        logger.error(f"Error cleaning up files: {str(e)}")
-        pass  # Ignore cleanup errors
+# This helps with debugging
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global exception handler caught: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"}
+    )
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
