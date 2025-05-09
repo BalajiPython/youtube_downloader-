@@ -121,6 +121,13 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
                     'Referer': 'https://www.youtube.com/'
+                },
+                'extractor_args': {
+                    'youtube': {
+                        'skip': ['dash', 'hls'],
+                        'player_client': ['android', 'web'],
+                        'player_skip': ['js', 'configs', 'webpage'],
+                    }
                 }
             }
 
@@ -153,7 +160,16 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                 # Run download in a separate thread to not block
                 def download_task():
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        return ydl.extract_info(url, download=True)
+                        try:
+                            # First try to get video info
+                            info = ydl.extract_info(url, download=False)
+                            if not info:
+                                raise Exception("Could not extract video information")
+                            # Then download
+                            return ydl.extract_info(url, download=True)
+                        except Exception as e:
+                            logger.error(f"Download error: {str(e)}")
+                            raise
                 
                 loop = asyncio.get_event_loop()
                 return await loop.run_in_executor(None, download_task)
@@ -166,7 +182,25 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                     raise Exception("No information returned from download process")
                 logger.info(f"Download completed: {info.get('title')}")
             except Exception as e:
-                logger.warning(f"First attempt failed with error: {str(e)}")
+                error_message = str(e)
+                logger.warning(f"First attempt failed with error: {error_message}")
+                
+                # Check for specific error messages
+                if "Failed to extract any player response" in error_message:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="YouTube has updated their platform. Please try again in a few minutes."
+                    )
+                elif "Video unavailable" in error_message:
+                    raise HTTPException(status_code=404, detail="Video is unavailable or private")
+                elif "Sign in to confirm your age" in error_message:
+                    raise HTTPException(status_code=403, detail="Age-restricted video")
+                elif "Unable to extract" in error_message:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Unable to access this video. YouTube might be blocking downloads."
+                    )
+                
                 # If first attempt failed, try with simpler options
                 logger.info("Trying with simpler options...")
                 
@@ -179,6 +213,8 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                     'nocheckcertificate': True,
                     'socket_timeout': 60,
                     'retries': 10,
+                    'extract_flat': True,
+                    'force_generic_extractor': True,
                 }
                 
                 if format == "audio":
@@ -189,10 +225,17 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                     }]
                 
                 # Try with simpler options
-                with yt_dlp.YoutubeDL(simple_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    if not info:
-                        raise HTTPException(status_code=500, detail="Could not extract video information")
+                try:
+                    with yt_dlp.YoutubeDL(simple_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                        if not info:
+                            raise HTTPException(status_code=500, detail="Could not extract video information")
+                except Exception as e2:
+                    logger.error(f"Second attempt failed with error: {str(e2)}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Could not download video. Please try again later or try a different video."
+                    )
             
             # Get the title and clean it
             title = info.get('title', 'download').strip()
