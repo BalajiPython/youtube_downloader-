@@ -59,9 +59,39 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
         os.makedirs(temp_dir, exist_ok=True)
 
         try:
+            # Common options for both video and audio
+            common_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Cache-Control': 'max-age=0',
+                },
+                'cookiesfrombrowser': ('chrome',),
+                'extractor_args': {
+                    'youtube': {
+                        'skip': ['dash', 'hls'],
+                        'player_client': ['android'],
+                        'player_skip': ['js', 'configs', 'webpage'],
+                    }
+                }
+            }
+
             if format == "audio":
                 # Audio download options
                 ydl_opts = {
+                    **common_opts,
                     'format': 'bestaudio/best',
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',
@@ -69,18 +99,15 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                         'preferredquality': '192',
                     }],
                     'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                    'quiet': True,
-                    'no_warnings': True,
                 }
                 file_extension = 'mp3'
                 media_type = 'audio/mpeg'
             else:
-                # Video download options - using a format that includes both video and audio
+                # Video download options
                 ydl_opts = {
-                    'format': 'best[ext=mp4]/best',  # This will get the best quality that includes both video and audio
+                    **common_opts,
+                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                     'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                    'quiet': True,
-                    'no_warnings': True,
                 }
                 file_extension = 'mp4'
                 media_type = 'video/mp4'
