@@ -108,39 +108,52 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                         'preferredquality': '320',
                     }],
                     'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                    'verbose': True,  # Add verbose output
                 }
                 file_extension = 'mp3'
                 media_type = 'audio/mpeg'
             else:
-                # Video download options with simplified format selection
+                # Video download options with basic format selection
                 ydl_opts = {
                     **common_opts,
-                    'format': 'best',  # Simplified format selection
+                    'format': '18/best',  # Format 18 is 360p MP4, falling back to best available
                     'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                    'verbose': True,  # Add verbose output
+                    'extract_flat': False,
+                    'force_generic_extractor': False,
+                    'no_check_certificate': True,
                 }
                 file_extension = 'mp4'
                 media_type = 'video/mp4'
 
-            logger.info(f"Starting download for URL: {url}")
+            logger.info(f"Starting download for URL: {url} with format: {format}")
+            logger.info(f"Download options: {ydl_opts}")
             
             # Download the video/audio
             info = None
             try:
                 # First attempt with standard options
-                logger.info("Attempting to extract video information...")
+                logger.info("Attempting first download method...")
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
+                    logger.info(f"First attempt successful, info: {info.get('title') if info else 'No info'}")
             except Exception as e:
-                logger.warning(f"First attempt failed: {str(e)}")
+                logger.warning(f"First attempt failed with error: {str(e)}")
                 try:
-                    # Second attempt with different options
-                    logger.info("Trying alternative extraction method...")
-                    ydl_opts['extract_flat'] = True
-                    ydl_opts['force_generic_extractor'] = True
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl2:
+                    # Second attempt with basic options
+                    logger.info("Trying second download method...")
+                    basic_opts = {
+                        'format': 'best',
+                        'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                        'quiet': False,
+                        'no_warnings': False,
+                        'verbose': True,
+                    }
+                    with yt_dlp.YoutubeDL(basic_opts) as ydl2:
                         info = ydl2.extract_info(url, download=True)
+                        logger.info(f"Second attempt successful, info: {info.get('title') if info else 'No info'}")
                 except Exception as e2:
-                    logger.error(f"Second attempt failed: {str(e2)}")
+                    logger.error(f"Second attempt failed with error: {str(e2)}")
                     raise HTTPException(status_code=500, detail=f"Could not download video: {str(e2)}")
 
             if not info:
@@ -151,11 +164,13 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
             if not title:
                 title = 'download'
             title = re.sub(r'[^\w\-_\. ]', '_', title)
+            logger.info(f"Video title: {title}")
             
             # Get the filename
             temp_filename = yt_dlp.YoutubeDL(ydl_opts).prepare_filename(info)
             if not temp_filename:
                 raise HTTPException(status_code=500, detail="Could not prepare filename")
+            logger.info(f"Temporary filename: {temp_filename}")
             
             # For audio downloads, the filename will have .mp3 extension
             if format == "audio":
@@ -163,6 +178,7 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
             
             # Check if the file exists
             if not os.path.exists(temp_filename):
+                logger.error(f"File not found at path: {temp_filename}")
                 raise HTTPException(status_code=500, detail="Downloaded file not found")
 
             logger.info(f"Download completed successfully: {temp_filename}")
