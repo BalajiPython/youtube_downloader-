@@ -3,7 +3,7 @@ services:
     name: youtube-downloader
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.0 

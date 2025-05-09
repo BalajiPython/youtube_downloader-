@@ -63,7 +63,20 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
             common_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'extract_flat': False,
+                'nocheckcertificate': True,
+                'ignoreerrors': True,
+                'no_color': True,
+                'geo_bypass': True,
+                'geo_verification_proxy': None,
+                'socket_timeout': 30,
+                'retries': 10,
+                'extractor_args': {
+                    'youtube': {
+                        'skip': ['dash', 'hls'],
+                        'player_client': ['android', 'web'],
+                        'player_skip': ['js', 'configs', 'webpage'],
+                    }
+                },
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -72,48 +85,28 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                     'DNT': '1',
                     'Connection': 'keep-alive',
                     'Upgrade-Insecure-Requests': '1',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Sec-Fetch-User': '?1',
-                    'Cache-Control': 'max-age=0',
-                },
-                'cookiesfrombrowser': ('chrome',),
-                'extractor_args': {
-                    'youtube': {
-                        'skip': ['dash', 'hls'],
-                        'player_client': ['android'],
-                        'player_skip': ['js', 'configs', 'webpage'],
-                    }
-                },
-                'nocheckcertificate': True,
-                'ignoreerrors': True,
-                'no_color': True,
-                'geo_bypass': True,
-                'geo_verification_proxy': None,
-                'socket_timeout': 30,
-                'retries': 10,
+                }
             }
 
             if format == "audio":
-                # Audio download options
+                # Audio download options with high quality
                 ydl_opts = {
                     **common_opts,
                     'format': 'bestaudio/best',
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',
                         'preferredcodec': 'mp3',
-                        'preferredquality': '192',
+                        'preferredquality': '320',  # Highest quality MP3
                     }],
                     'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
                 }
                 file_extension = 'mp3'
                 media_type = 'audio/mpeg'
             else:
-                # Video download options
+                # Video download options with highest quality
                 ydl_opts = {
                     **common_opts,
-                    'format': 'best[ext=mp4]/best',
+                    'format': 'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                     'merge_output_format': 'mp4',
                     'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
                 }
@@ -122,23 +115,47 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
 
             # Download the video/audio
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                title = info.get('title', 'download')
-                # Clean the title to make it safe for filenames
-                title = re.sub(r'[^\w\-_\. ]', '_', title)
-                temp_filename = ydl.prepare_filename(info)
-                
-                # For audio downloads, the filename will have .mp3 extension
-                if format == "audio":
-                    temp_filename = temp_filename.rsplit('.', 1)[0] + '.mp3'
+                try:
+                    # First try to get video info without downloading
+                    info = ydl.extract_info(url, download=False)
+                    if not info:
+                        raise HTTPException(status_code=404, detail="Could not extract video information")
+                    
+                    # Now download the video
+                    info = ydl.extract_info(url, download=True)
+                    if not info:
+                        raise HTTPException(status_code=404, detail="Could not download video")
+                    
+                    # Get the title and clean it
+                    title = info.get('title', 'download')
+                    if not title:
+                        title = 'download'
+                    title = re.sub(r'[^\w\-_\. ]', '_', title)
+                    
+                    # Get the filename
+                    temp_filename = ydl.prepare_filename(info)
+                    if not temp_filename:
+                        raise HTTPException(status_code=500, detail="Could not prepare filename")
+                    
+                    # For audio downloads, the filename will have .mp3 extension
+                    if format == "audio":
+                        temp_filename = temp_filename.rsplit('.', 1)[0] + '.mp3'
+                    
+                    # Check if the file exists
+                    if not os.path.exists(temp_filename):
+                        raise HTTPException(status_code=500, detail="Downloaded file not found")
 
-            # Return the file
-            return FileResponse(
-                temp_filename,
-                media_type=media_type,
-                filename=f"{title}.{file_extension}",
-                background=lambda: cleanup_files(temp_dir)
-            )
+                    # Return the file
+                    return FileResponse(
+                        temp_filename,
+                        media_type=media_type,
+                        filename=f"{title}.{file_extension}",
+                        background=lambda: cleanup_files(temp_dir)
+                    )
+                except yt_dlp.utils.DownloadError as e:
+                    raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"Error processing video: {str(e)}")
 
         except Exception as e:
             cleanup_files(temp_dir)
