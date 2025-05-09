@@ -77,14 +77,6 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                     'Sec-Fetch-Site': 'none',
                     'Sec-Fetch-User': '?1',
                     'Cache-Control': 'max-age=0',
-                },
-                'cookiesfrombrowser': ('chrome',),
-                'extractor_args': {
-                    'youtube': {
-                        'skip': ['dash', 'hls'],
-                        'player_client': ['android'],
-                        'player_skip': ['js', 'configs', 'webpage'],
-                    }
                 }
             }
 
@@ -106,7 +98,8 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                 # Video download options
                 ydl_opts = {
                     **common_opts,
-                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                    'format': 'best[ext=mp4]/best',
+                    'merge_output_format': 'mp4',
                     'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
                 }
                 file_extension = 'mp4'
