@@ -77,7 +77,22 @@ def download_video(url: str = Query(..., description="YouTube video URL"), forma
                     'Sec-Fetch-Site': 'none',
                     'Sec-Fetch-User': '?1',
                     'Cache-Control': 'max-age=0',
-                }
+                },
+                'cookiesfrombrowser': ('chrome',),
+                'extractor_args': {
+                    'youtube': {
+                        'skip': ['dash', 'hls'],
+                        'player_client': ['android'],
+                        'player_skip': ['js', 'configs', 'webpage'],
+                    }
+                },
+                'nocheckcertificate': True,
+                'ignoreerrors': True,
+                'no_color': True,
+                'geo_bypass': True,
+                'geo_verification_proxy': None,
+                'socket_timeout': 30,
+                'retries': 10,
             }
 
             if format == "audio":
