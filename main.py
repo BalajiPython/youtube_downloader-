@@ -121,21 +121,7 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
                     'Referer': 'https://www.youtube.com/',
-                    'Origin': 'https://www.youtube.com',
-                    'Sec-Fetch-Site': 'same-origin',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-User': '?1',
-                    'Sec-Fetch-Dest': 'document',
-                },
-                'extractor_args': {
-                    'youtube': {
-                        'skip': ['dash', 'hls'],
-                        'player_client': ['android', 'web'],
-                        'player_skip': ['js', 'configs', 'webpage'],
-                    }
-                },
-                'cookiesfrombrowser': ('chrome',),  # Try to use cookies from Chrome
-                'cookiefile': 'cookies.txt',  # Fallback cookie file
+                }
             }
 
             if format == "audio":
@@ -152,57 +138,37 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                 file_extension = 'mp3'
                 media_type = 'audio/mpeg'
             else:
-                # Video download options with better format selection
+                # Video download options with direct format selection
                 ydl_opts = {
                     **common_opts,
-                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',  # Try to get best quality with separate streams
+                    'format': '22',  # 720p MP4
                 }
                 file_extension = 'mp4'
                 media_type = 'video/mp4'
 
             logger.info(f"Starting download for URL: {url} with format: {format}")
             
-            # Function to attempt download with different methods
+            # Function to attempt download
             async def try_download():
-                # List of different extraction methods to try
-                extraction_methods = [
-                    # Method 1: Standard download
-                    lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=True),
-                    
-                    # Method 2: Flat extraction
-                    lambda: yt_dlp.YoutubeDL({**ydl_opts, 'extract_flat': True}).extract_info(url, download=True),
-                    
-                    # Method 3: Generic extractor
-                    lambda: yt_dlp.YoutubeDL({**ydl_opts, 'force_generic_extractor': True}).extract_info(url, download=True),
-                    
-                    # Method 4: Simplified format
-                    lambda: yt_dlp.YoutubeDL({**ydl_opts, 'format': 'best'}).extract_info(url, download=True),
-                    
-                    # Method 5: Direct format
-                    lambda: yt_dlp.YoutubeDL({**ydl_opts, 'format': '22'}).extract_info(url, download=True),  # 720p MP4
-                ]
+                def download_task():
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        try:
+                            # First try to get video info
+                            info = ydl.extract_info(url, download=False)
+                            if not info:
+                                raise Exception("Could not extract video information")
+                            # Then download
+                            return ydl.extract_info(url, download=True)
+                        except Exception as e:
+                            logger.error(f"Download error: {str(e)}")
+                            raise
                 
-                last_error = None
-                for i, method in enumerate(extraction_methods, 1):
-                    try:
-                        logger.info(f"Trying extraction method {i}...")
-                        loop = asyncio.get_event_loop()
-                        result = await loop.run_in_executor(None, method)
-                        if result:
-                            logger.info(f"Method {i} succeeded!")
-                            return result
-                    except Exception as e:
-                        last_error = e
-                        logger.warning(f"Method {i} failed: {str(e)}")
-                        continue
-                
-                if last_error:
-                    raise last_error
-                raise Exception("All extraction methods failed")
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(None, download_task)
 
-            # Try downloading with different methods
+            # Try downloading
             try:
-                logger.info("Starting download attempts...")
+                logger.info("Starting download...")
                 info = await try_download()
                 if not info:
                     raise Exception("No information returned from download process")
@@ -213,10 +179,21 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                 
                 # Check for specific error messages
                 if "Failed to extract any player response" in error_message:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="YouTube has updated their platform. Please try again in a few minutes."
-                    )
+                    # Try with a different format
+                    logger.info("Trying with alternative format...")
+                    try:
+                        alt_opts = {**ydl_opts, 'format': '18'}  # 360p MP4
+                        with yt_dlp.YoutubeDL(alt_opts) as ydl:
+                            info = ydl.extract_info(url, download=True)
+                            if info:
+                                logger.info("Alternative format download succeeded")
+                                return info
+                    except Exception as e2:
+                        logger.error(f"Alternative format failed: {str(e2)}")
+                        raise HTTPException(
+                            status_code=503,
+                            detail="YouTube has updated their platform. Please try again in a few minutes."
+                        )
                 elif "Video unavailable" in error_message:
                     raise HTTPException(status_code=404, detail="Video is unavailable or private")
                 elif "Sign in to confirm your age" in error_message:
