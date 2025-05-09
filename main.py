@@ -112,14 +112,24 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                 'no_color': True,
                 'verbose': True,
                 'extract_flat': False,
-                'socket_timeout': 30,
-                'retries': 5,
+                'socket_timeout': 60,  # Increased timeout
+                'retries': 10,  # Increased retries
+                'fragment_retries': 10,  # Added fragment retries
                 'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
                     'Referer': 'https://www.youtube.com/',
+                    'Origin': 'https://www.youtube.com',
+                    'Connection': 'keep-alive',
+                },
+                'extractor_args': {
+                    'youtube': {
+                        'skip': ['dash', 'hls'],
+                        'player_client': ['android', 'web'],
+                        'player_skip': ['js', 'configs', 'webpage'],
+                    }
                 }
             }
 
@@ -140,30 +150,39 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                 # Video download options with direct format selection
                 ydl_opts = {
                     **common_opts,
-                    'format': '22',  # 720p MP4
+                    'format': 'best[ext=mp4]/best',  # Try best MP4 first, then best available
                 }
                 file_extension = 'mp4'
                 media_type = 'video/mp4'
 
             logger.info(f"Starting download for URL: {url} with format: {format}")
             
-            # Function to attempt download
-            async def try_download():
-                def download_task():
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        try:
-                            # First try to get video info
-                            info = ydl.extract_info(url, download=False)
-                            if not info:
-                                raise Exception("Could not extract video information")
-                            # Then download
-                            return ydl.extract_info(url, download=True)
-                        except Exception as e:
-                            logger.error(f"Download error: {str(e)}")
+            # Function to attempt download with retries
+            async def try_download(max_retries=3):
+                for attempt in range(max_retries):
+                    try:
+                        def download_task():
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                try:
+                                    # First try to get video info
+                                    info = ydl.extract_info(url, download=False)
+                                    if not info:
+                                        raise Exception("Could not extract video information")
+                                    # Then download
+                                    return ydl.extract_info(url, download=True)
+                                except Exception as e:
+                                    logger.error(f"Download error: {str(e)}")
+                                    raise
+                        
+                        loop = asyncio.get_event_loop()
+                        return await loop.run_in_executor(None, download_task)
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            wait_time = (attempt + 1) * 5  # Exponential backoff
+                            logger.warning(f"Attempt {attempt + 1} failed, retrying in {wait_time} seconds...")
+                            await asyncio.sleep(wait_time)
+                        else:
                             raise
-                
-                loop = asyncio.get_event_loop()
-                return await loop.run_in_executor(None, download_task)
 
             # Try downloading
             try:
@@ -181,7 +200,7 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                     # Try with a different format
                     logger.info("Trying with alternative format...")
                     try:
-                        alt_opts = {**ydl_opts, 'format': '18'}  # 360p MP4
+                        alt_opts = {**ydl_opts, 'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best'}
                         with yt_dlp.YoutubeDL(alt_opts) as ydl:
                             info = ydl.extract_info(url, download=True)
                             if info:
@@ -191,7 +210,7 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                         logger.error(f"Alternative format failed: {str(e2)}")
                         raise HTTPException(
                             status_code=503,
-                            detail="YouTube has updated their platform. Please try again in a few minutes."
+                            detail="Server connection error. Please try again in a few minutes."
                         )
                 elif "Video unavailable" in error_message:
                     raise HTTPException(status_code=404, detail="Video is unavailable or private")
@@ -201,6 +220,11 @@ async def download_video(request: Request, url: str = Query(..., description="Yo
                     raise HTTPException(
                         status_code=503,
                         detail="Unable to access this video. YouTube might be blocking downloads."
+                    )
+                elif "Connection refused" in error_message or "Connection reset" in error_message:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Server connection error. Please try again in a few minutes."
                     )
                 else:
                     raise HTTPException(
